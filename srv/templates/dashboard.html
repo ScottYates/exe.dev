@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.Name}} - ProtoPage</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div id="app" 
+         data-page-id="{{.ID}}" 
+         data-bg-color="{{.BgColor}}" 
+         data-bg-image="{{.BgImage}}">
+        
+        <!-- Toolbar -->
+        <div id="toolbar">
+            <div class="toolbar-left">
+                <span class="logo">📰 ProtoPage</span>
+                <span class="page-name" id="page-name">{{.Name}}</span>
+            </div>
+            <div class="toolbar-right">
+                <button id="btn-add-widget" class="btn btn-primary">+ Add Widget</button>
+                <button id="btn-settings" class="btn">⚙️ Settings</button>
+            </div>
+        </div>
+
+        <!-- Widget Container -->
+        <div id="widget-container"></div>
+
+        <!-- Settings Modal -->
+        <div id="settings-modal" class="modal hidden">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Page Settings</h2>
+                    <button class="modal-close">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label>Page Name</label>
+                        <input type="text" id="setting-page-name" value="{{.Name}}">
+                    </div>
+                    <div class="form-group">
+                        <label>Background Color</label>
+                        <input type="color" id="setting-bg-color" value="{{.BgColor}}">
+                    </div>
+                    <div class="form-group">
+                        <label>Background Image URL</label>
+                        <input type="text" id="setting-bg-image" value="{{.BgImage}}" placeholder="https://example.com/image.jpg">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button id="btn-save-settings" class="btn btn-primary">Save</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Widget Config Modal -->
+        <div id="widget-modal" class="modal hidden">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2 id="widget-modal-title">Widget Settings</h2>
+                    <button class="modal-close">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label>Title</label>
+                        <input type="text" id="widget-title">
+                    </div>
+                    <div class="form-group">
+                        <label>RSS Feed URL</label>
+                        <input type="text" id="widget-feed-url" placeholder="https://example.com/feed.xml">
+                    </div>
+                    <div class="form-group">
+                        <label>Background Color</label>
+                        <input type="color" id="widget-bg-color" value="#16213e">
+                    </div>
+                    <div class="form-group">
+                        <label>Header Color</label>
+                        <input type="color" id="widget-header-color" value="#0f3460">
+                    </div>
+                    <div class="form-group">
+                        <label>Text Color</label>
+                        <input type="color" id="widget-text-color" value="#ffffff">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button id="btn-delete-widget" class="btn btn-danger">Delete Widget</button>
+                    <button id="btn-save-widget" class="btn btn-primary">Save</button>
+                </div>
+            </div>
+        </div>
+
+    </div>
+    <script src="/static/app.js"></script>
+</body>
+</html>
