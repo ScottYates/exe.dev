@@ -1,6 +1,6 @@
-// ProtoPage Dashboard App
+// FeedDeck - RSS Dashboard App
 
-class ProtoPage {
+class FeedDeck {
     constructor() {
         this.app = document.getElementById('app');
         this.pageId = this.app.dataset.pageId;
@@ -174,7 +174,7 @@ class ProtoPage {
 
         // Load feed
         if (config.feed_url) {
-            this.loadFeed(widget.id, config.feed_url);
+            this.loadFeed(widget.id, config.feed_url, config.show_preview !== false);
         } else {
             el.querySelector('.widget-body').innerHTML = `
                 <div class="feed-empty">No feed configured. Click ⚙️ to add one.</div>
@@ -281,7 +281,7 @@ class ProtoPage {
         }
     }
 
-    async loadFeed(widgetId, feedUrl) {
+    async loadFeed(widgetId, feedUrl, showPreview = true) {
         const el = document.getElementById(`widget-${widgetId}`);
         const body = el.querySelector('.widget-body');
         
@@ -304,15 +304,16 @@ class ProtoPage {
                     return;
                 }
 
+                const compactClass = showPreview ? '' : ' compact';
                 body.innerHTML = feed.items.map(item => `
-                    <div class="feed-item">
+                    <div class="feed-item${compactClass}">
                         <div class="feed-item-title">
                             <a href="${this.escapeHtml(item.link)}" target="_blank" rel="noopener">
                                 ${this.escapeHtml(item.title)}
                             </a>
                         </div>
                         ${item.published ? `<div class="feed-item-meta">${this.formatDate(item.published)}</div>` : ''}
-                        ${item.description ? `<div class="feed-item-description">${this.escapeHtml(item.description)}</div>` : ''}
+                        ${showPreview && item.description ? `<div class="feed-item-description">${this.escapeHtml(item.description)}</div>` : ''}
                     </div>
                 `).join('');
             } else {
@@ -338,7 +339,7 @@ class ProtoPage {
             await fetch(`/api/feed/refresh?url=${encodeURIComponent(config.feed_url)}`, {
                 method: 'POST'
             });
-            await this.loadFeed(widgetId, config.feed_url);
+            await this.loadFeed(widgetId, config.feed_url, config.show_preview !== false);
         } catch (error) {
             body.innerHTML = `<div class="feed-error">⚠️ ${this.escapeHtml(error.message)}</div>`;
         }
@@ -357,6 +358,7 @@ class ProtoPage {
         document.getElementById('widget-bg-color').value = widget.bg_color || '#16213e';
         document.getElementById('widget-header-color').value = widget.header_color || '#0f3460';
         document.getElementById('widget-text-color').value = widget.text_color || '#ffffff';
+        document.getElementById('widget-show-preview').checked = config.show_preview !== false;
 
         document.getElementById('widget-modal').classList.remove('hidden');
     }
@@ -369,6 +371,7 @@ class ProtoPage {
         const bgColor = document.getElementById('widget-bg-color').value;
         const headerColor = document.getElementById('widget-header-color').value;
         const textColor = document.getElementById('widget-text-color').value;
+        const showPreview = document.getElementById('widget-show-preview').checked;
 
         try {
             const response = await fetch(`/api/widgets/${this.editingWidgetId}`, {
@@ -379,7 +382,7 @@ class ProtoPage {
                     bg_color: bgColor,
                     header_color: headerColor,
                     text_color: textColor,
-                    config: JSON.stringify({ feed_url: feedUrl })
+                    config: JSON.stringify({ feed_url: feedUrl, show_preview: showPreview })
                 })
             });
             const result = await response.json();
@@ -482,5 +485,5 @@ class ProtoPage {
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
-    window.protoPage = new ProtoPage();
+    window.feedDeck = new FeedDeck();
 });

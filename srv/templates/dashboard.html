@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{.Name}} - ProtoPage</title>
+    <title>{{.Name}} - FeedDeck</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -15,7 +15,7 @@
         <!-- Toolbar -->
         <div id="toolbar">
             <div class="toolbar-left">
-                <span class="logo">📰 ProtoPage</span>
+                <span class="logo">📡 FeedDeck</span>
                 <span class="page-name" id="page-name">{{.Name}}</span>
             </div>
             <div class="toolbar-right">
@@ -81,6 +81,12 @@
                     <div class="form-group">
                         <label>Text Color</label>
                         <input type="color" id="widget-text-color" value="#ffffff">
+                    </div>
+                    <div class="form-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="widget-show-preview" checked>
+                            Show article previews
+                        </label>
                     </div>
                 </div>
                 <div class="modal-footer">
