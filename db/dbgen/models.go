@@ -22,6 +22,7 @@ type Page struct {
 	BgImage   *string   `json:"bg_image"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+	Config    string    `json:"config"`
 }
 
 type RssFeed struct {

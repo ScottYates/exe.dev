@@ -11,8 +11,8 @@ import (
 )
 
 const createPage = `-- name: CreatePage :exec
-INSERT INTO pages (id, user_id, name, bg_color, bg_image, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO pages (id, user_id, name, bg_color, bg_image, config, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type CreatePageParams struct {
@@ -21,6 +21,7 @@ type CreatePageParams struct {
 	Name      string    `json:"name"`
 	BgColor   *string   `json:"bg_color"`
 	BgImage   *string   `json:"bg_image"`
+	Config    string    `json:"config"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -32,6 +33,7 @@ func (q *Queries) CreatePage(ctx context.Context, arg CreatePageParams) error {
 		arg.Name,
 		arg.BgColor,
 		arg.BgImage,
+		arg.Config,
 		arg.CreatedAt,
 		arg.UpdatedAt,
 	)
@@ -48,7 +50,7 @@ func (q *Queries) DeletePage(ctx context.Context, id string) error {
 }
 
 const getPageByID = `-- name: GetPageByID :one
-SELECT id, user_id, name, bg_color, bg_image, created_at, updated_at FROM pages WHERE id = ?
+SELECT id, user_id, name, bg_color, bg_image, created_at, updated_at, config FROM pages WHERE id = ?
 `
 
 func (q *Queries) GetPageByID(ctx context.Context, id string) (Page, error) {
@@ -62,12 +64,13 @@ func (q *Queries) GetPageByID(ctx context.Context, id string) (Page, error) {
 		&i.BgImage,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Config,
 	)
 	return i, err
 }
 
 const getPagesByUserID = `-- name: GetPagesByUserID :many
-SELECT id, user_id, name, bg_color, bg_image, created_at, updated_at FROM pages WHERE user_id = ? ORDER BY created_at
+SELECT id, user_id, name, bg_color, bg_image, created_at, updated_at, config FROM pages WHERE user_id = ? ORDER BY created_at
 `
 
 func (q *Queries) GetPagesByUserID(ctx context.Context, userID string) ([]Page, error) {
@@ -87,6 +90,7 @@ func (q *Queries) GetPagesByUserID(ctx context.Context, userID string) ([]Page, 
 			&i.BgImage,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Config,
 		); err != nil {
 			return nil, err
 		}
@@ -102,13 +106,14 @@ func (q *Queries) GetPagesByUserID(ctx context.Context, userID string) ([]Page, 
 }
 
 const updatePage = `-- name: UpdatePage :exec
-UPDATE pages SET name = ?, bg_color = ?, bg_image = ?, updated_at = ? WHERE id = ?
+UPDATE pages SET name = ?, bg_color = ?, bg_image = ?, config = ?, updated_at = ? WHERE id = ?
 `
 
 type UpdatePageParams struct {
 	Name      string    `json:"name"`
 	BgColor   *string   `json:"bg_color"`
 	BgImage   *string   `json:"bg_image"`
+	Config    string    `json:"config"`
 	UpdatedAt time.Time `json:"updated_at"`
 	ID        string    `json:"id"`
 }
@@ -118,6 +123,7 @@ func (q *Queries) UpdatePage(ctx context.Context, arg UpdatePageParams) error {
 		arg.Name,
 		arg.BgColor,
 		arg.BgImage,
+		arg.Config,
 		arg.UpdatedAt,
 		arg.ID,
 	)

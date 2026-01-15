@@ -6,11 +6,16 @@ class FeedDeck {
         this.pageId = this.app.dataset.pageId;
         this.widgets = new Map();
         this.editingWidgetId = null;
+        this.gridSize = 0;
+        this.showGrid = false;
         
         this.init();
     }
 
     async init() {
+        // Load page config
+        this.loadPageConfig();
+        
         // Apply initial background
         this.applyBackground(
             this.app.dataset.bgColor,
@@ -22,6 +27,35 @@ class FeedDeck {
 
         // Setup event listeners
         this.setupEventListeners();
+    }
+    
+    loadPageConfig() {
+        try {
+            const config = JSON.parse(this.app.dataset.config || '{}');
+            this.gridSize = config.grid_size || 0;
+            this.showGrid = config.show_grid || false;
+            this.updateGridDisplay();
+        } catch (e) {
+            console.error('Failed to parse page config:', e);
+        }
+    }
+    
+    updateGridDisplay() {
+        const container = document.getElementById('widget-container');
+        if (this.showGrid && this.gridSize > 0) {
+            container.style.backgroundImage = `
+                linear-gradient(to right, rgba(255,255,255,0.1) 1px, transparent 1px),
+                linear-gradient(to bottom, rgba(255,255,255,0.1) 1px, transparent 1px)
+            `;
+            container.style.backgroundSize = `${this.gridSize}px ${this.gridSize}px`;
+        } else {
+            container.style.backgroundImage = 'none';
+        }
+    }
+    
+    snapToGrid(value) {
+        if (this.gridSize <= 0) return value;
+        return Math.round(value / this.gridSize) * this.gridSize;
     }
 
     applyBackground(color, image) {
@@ -260,8 +294,15 @@ class FeedDeck {
             const dx = e.clientX - startX;
             const dy = e.clientY - startY;
 
-            el.style.left = `${Math.max(0, startLeft + dx)}px`;
-            el.style.top = `${Math.max(50, startTop + dy)}px`;
+            let newLeft = Math.max(0, startLeft + dx);
+            let newTop = Math.max(60, startTop + dy);
+            
+            // Snap to grid
+            newLeft = this.snapToGrid(newLeft);
+            newTop = this.snapToGrid(newTop);
+
+            el.style.left = `${newLeft}px`;
+            el.style.top = `${newTop}px`;
         });
 
         document.addEventListener('mouseup', () => {
@@ -299,8 +340,15 @@ class FeedDeck {
             const dx = e.clientX - startX;
             const dy = e.clientY - startY;
 
-            el.style.width = `${Math.max(200, startWidth + dx)}px`;
-            el.style.height = `${Math.max(150, startHeight + dy)}px`;
+            let newWidth = Math.max(200, startWidth + dx);
+            let newHeight = Math.max(150, startHeight + dy);
+            
+            // Snap to grid
+            newWidth = this.snapToGrid(newWidth) || newWidth;
+            newHeight = this.snapToGrid(newHeight) || newHeight;
+
+            el.style.width = `${newWidth}px`;
+            el.style.height = `${newHeight}px`;
         });
 
         document.addEventListener('mouseup', () => {
@@ -536,6 +584,9 @@ class FeedDeck {
     }
 
     showSettingsModal() {
+        // Populate current values
+        document.getElementById('setting-grid-size').value = this.gridSize;
+        document.getElementById('setting-show-grid').checked = this.showGrid;
         document.getElementById('settings-modal').classList.remove('hidden');
     }
 
@@ -543,6 +594,13 @@ class FeedDeck {
         const name = document.getElementById('setting-page-name').value;
         const bgColor = document.getElementById('setting-bg-color').value;
         const bgImage = document.getElementById('setting-bg-image').value;
+        const gridSize = parseInt(document.getElementById('setting-grid-size').value) || 0;
+        const showGrid = document.getElementById('setting-show-grid').checked;
+        
+        const config = JSON.stringify({
+            grid_size: gridSize,
+            show_grid: showGrid
+        });
 
         try {
             const response = await fetch(`/api/pages/${this.pageId}`, {
@@ -551,7 +609,8 @@ class FeedDeck {
                 body: JSON.stringify({
                     name,
                     bg_color: bgColor,
-                    bg_image: bgImage
+                    bg_image: bgImage,
+                    config: config
                 })
             });
             const result = await response.json();
@@ -559,6 +618,9 @@ class FeedDeck {
             if (result.success) {
                 this.applyBackground(bgColor, bgImage);
                 document.getElementById('page-name').textContent = name;
+                this.gridSize = gridSize;
+                this.showGrid = showGrid;
+                this.updateGridDisplay();
                 this.hideModals();
             }
         } catch (error) {

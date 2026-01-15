@@ -67,6 +67,7 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 			Name:      "My Page",
 			BgColor:   &bgColor,
 			BgImage:   &bgImage,
+			Config:    "{}",
 			CreatedAt: now,
 			UpdatedAt: now,
 		})
@@ -413,6 +414,7 @@ func (s *Server) HandleAPIUpdatePage(w http.ResponseWriter, r *http.Request) {
 		Name    *string `json:"name"`
 		BgColor *string `json:"bg_color"`
 		BgImage *string `json:"bg_image"`
+		Config  *string `json:"config"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "invalid json"})
@@ -428,11 +430,15 @@ func (s *Server) HandleAPIUpdatePage(w http.ResponseWriter, r *http.Request) {
 	if input.BgImage != nil {
 		page.BgImage = input.BgImage
 	}
+	if input.Config != nil {
+		page.Config = *input.Config
+	}
 
 	err = q.UpdatePage(r.Context(), dbgen.UpdatePageParams{
 		Name:      page.Name,
 		BgColor:   page.BgColor,
 		BgImage:   page.BgImage,
+		Config:    page.Config,
 		UpdatedAt: time.Now(),
 		ID:        pageID,
 	})
