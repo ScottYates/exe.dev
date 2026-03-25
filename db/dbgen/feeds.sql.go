@@ -25,7 +25,7 @@ func (q *Queries) CreateFeedIfNotExists(ctx context.Context, arg CreateFeedIfNot
 }
 
 const getAllFeeds = `-- name: GetAllFeeds :many
-SELECT url, title, content, last_fetched, last_error, created_at FROM rss_feeds ORDER BY url
+SELECT url, title, content, last_fetched, last_error, created_at, favicon FROM rss_feeds ORDER BY url
 `
 
 func (q *Queries) GetAllFeeds(ctx context.Context) ([]RssFeed, error) {
@@ -44,6 +44,7 @@ func (q *Queries) GetAllFeeds(ctx context.Context) ([]RssFeed, error) {
 			&i.LastFetched,
 			&i.LastError,
 			&i.CreatedAt,
+			&i.Favicon,
 		); err != nil {
 			return nil, err
 		}
@@ -59,7 +60,7 @@ func (q *Queries) GetAllFeeds(ctx context.Context) ([]RssFeed, error) {
 }
 
 const getFeedByURL = `-- name: GetFeedByURL :one
-SELECT url, title, content, last_fetched, last_error, created_at FROM rss_feeds WHERE url = ?
+SELECT url, title, content, last_fetched, last_error, created_at, favicon FROM rss_feeds WHERE url = ?
 `
 
 func (q *Queries) GetFeedByURL(ctx context.Context, url string) (RssFeed, error) {
@@ -72,12 +73,24 @@ func (q *Queries) GetFeedByURL(ctx context.Context, url string) (RssFeed, error)
 		&i.LastFetched,
 		&i.LastError,
 		&i.CreatedAt,
+		&i.Favicon,
 	)
 	return i, err
 }
 
+const getFeedFavicon = `-- name: GetFeedFavicon :one
+SELECT favicon FROM rss_feeds WHERE url = ?
+`
+
+func (q *Queries) GetFeedFavicon(ctx context.Context, url string) (*string, error) {
+	row := q.db.QueryRowContext(ctx, getFeedFavicon, url)
+	var favicon *string
+	err := row.Scan(&favicon)
+	return favicon, err
+}
+
 const getStaleFeeds = `-- name: GetStaleFeeds :many
-SELECT url, title, content, last_fetched, last_error, created_at FROM rss_feeds WHERE last_fetched IS NULL OR last_fetched < ? ORDER BY last_fetched
+SELECT url, title, content, last_fetched, last_error, created_at, favicon FROM rss_feeds WHERE last_fetched IS NULL OR (last_fetched < ? AND last_error IS NULL) ORDER BY last_fetched
 `
 
 func (q *Queries) GetStaleFeeds(ctx context.Context, lastFetched *time.Time) ([]RssFeed, error) {
@@ -96,6 +109,7 @@ func (q *Queries) GetStaleFeeds(ctx context.Context, lastFetched *time.Time) ([]
 			&i.LastFetched,
 			&i.LastError,
 			&i.CreatedAt,
+			&i.Favicon,
 		); err != nil {
 			return nil, err
 		}
@@ -108,6 +122,70 @@ func (q *Queries) GetStaleFeeds(ctx context.Context, lastFetched *time.Time) ([]
 		return nil, err
 	}
 	return items, nil
+}
+
+const getStaleFeedsWithErrors = `-- name: GetStaleFeedsWithErrors :many
+SELECT url, title, content, last_fetched, last_error, created_at, favicon FROM rss_feeds WHERE last_fetched IS NOT NULL AND last_fetched < ? AND last_error IS NOT NULL ORDER BY last_fetched
+`
+
+func (q *Queries) GetStaleFeedsWithErrors(ctx context.Context, lastFetched *time.Time) ([]RssFeed, error) {
+	rows, err := q.db.QueryContext(ctx, getStaleFeedsWithErrors, lastFetched)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RssFeed{}
+	for rows.Next() {
+		var i RssFeed
+		if err := rows.Scan(
+			&i.Url,
+			&i.Title,
+			&i.Content,
+			&i.LastFetched,
+			&i.LastError,
+			&i.CreatedAt,
+			&i.Favicon,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const updateFeedError = `-- name: UpdateFeedError :exec
+UPDATE rss_feeds SET last_fetched = ?, last_error = ? WHERE url = ?
+`
+
+type UpdateFeedErrorParams struct {
+	LastFetched *time.Time `json:"last_fetched"`
+	LastError   *string    `json:"last_error"`
+	Url         string     `json:"url"`
+}
+
+func (q *Queries) UpdateFeedError(ctx context.Context, arg UpdateFeedErrorParams) error {
+	_, err := q.db.ExecContext(ctx, updateFeedError, arg.LastFetched, arg.LastError, arg.Url)
+	return err
+}
+
+const updateFeedFavicon = `-- name: UpdateFeedFavicon :exec
+UPDATE rss_feeds SET favicon = ? WHERE url = ?
+`
+
+type UpdateFeedFaviconParams struct {
+	Favicon *string `json:"favicon"`
+	Url     string  `json:"url"`
+}
+
+func (q *Queries) UpdateFeedFavicon(ctx context.Context, arg UpdateFeedFaviconParams) error {
+	_, err := q.db.ExecContext(ctx, updateFeedFavicon, arg.Favicon, arg.Url)
+	return err
 }
 
 const upsertFeed = `-- name: UpsertFeed :exec

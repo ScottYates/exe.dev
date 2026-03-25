@@ -7,6 +7,7 @@ package dbgen
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -63,5 +64,44 @@ type MarkLinkVisitedParams struct {
 
 func (q *Queries) MarkLinkVisited(ctx context.Context, arg MarkLinkVisitedParams) error {
 	_, err := q.db.ExecContext(ctx, markLinkVisited, arg.UserID, arg.LinkUrl, arg.VisitedAt)
+	return err
+}
+
+const unmarkLinkVisited = `-- name: UnmarkLinkVisited :exec
+DELETE FROM visited_links WHERE user_id = ? AND link_url = ?
+`
+
+type UnmarkLinkVisitedParams struct {
+	UserID  string `json:"user_id"`
+	LinkUrl string `json:"link_url"`
+}
+
+func (q *Queries) UnmarkLinkVisited(ctx context.Context, arg UnmarkLinkVisitedParams) error {
+	_, err := q.db.ExecContext(ctx, unmarkLinkVisited, arg.UserID, arg.LinkUrl)
+	return err
+}
+
+const unmarkLinksVisited = `-- name: UnmarkLinksVisited :exec
+DELETE FROM visited_links WHERE user_id = ? AND link_url IN (/*SLICE:urls*/?)
+`
+
+type UnmarkLinksVisitedParams struct {
+	UserID string   `json:"user_id"`
+	Urls   []string `json:"urls"`
+}
+
+func (q *Queries) UnmarkLinksVisited(ctx context.Context, arg UnmarkLinksVisitedParams) error {
+	query := unmarkLinksVisited
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.UserID)
+	if len(arg.Urls) > 0 {
+		for _, v := range arg.Urls {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:urls*/?", strings.Repeat(",?", len(arg.Urls))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:urls*/?", "NULL", 1)
+	}
+	_, err := q.db.ExecContext(ctx, query, queryParams...)
 	return err
 }

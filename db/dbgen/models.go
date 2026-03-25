@@ -15,14 +15,17 @@ type Migration struct {
 }
 
 type Page struct {
-	ID        string    `json:"id"`
-	UserID    string    `json:"user_id"`
-	Name      string    `json:"name"`
-	BgColor   *string   `json:"bg_color"`
-	BgImage   *string   `json:"bg_image"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Config    string    `json:"config"`
+	ID         string    `json:"id"`
+	UserID     string    `json:"user_id"`
+	Name       string    `json:"name"`
+	BgColor    *string   `json:"bg_color"`
+	BgImage    *string   `json:"bg_image"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+	Config     string    `json:"config"`
+	Slug       *string   `json:"slug"`
+	IsPublic   *int64    `json:"is_public"`
+	SlugAccess *int64    `json:"slug_access"`
 }
 
 type RssFeed struct {
@@ -32,6 +35,24 @@ type RssFeed struct {
 	LastFetched *time.Time `json:"last_fetched"`
 	LastError   *string    `json:"last_error"`
 	CreatedAt   time.Time  `json:"created_at"`
+	Favicon     *string    `json:"favicon"`
+}
+
+type Session struct {
+	ID        string    `json:"id"`
+	UserID    string    `json:"user_id"`
+	CreatedAt time.Time `json:"created_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+type User struct {
+	ID        string    `json:"id"`
+	Email     string    `json:"email"`
+	Name      string    `json:"name"`
+	Picture   *string   `json:"picture"`
+	CreatedAt time.Time `json:"created_at"`
+	LastLogin time.Time `json:"last_login"`
+	ExedevID  *string   `json:"exedev_id"`
 }
 
 type VisitedLink struct {

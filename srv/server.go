@@ -9,14 +9,23 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"regexp"
 	"runtime"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"srv.exe.dev/db"
 	"srv.exe.dev/db/dbgen"
 )
+
+var slugRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
+func isValidSlug(slug string) bool {
+	if len(slug) < 1 || len(slug) > 64 {
+		return false
+	}
+	return slugRegex.MatchString(slug)
+}
 
 type Server struct {
 	DB           *sql.DB
@@ -44,10 +53,7 @@ func New(dbPath, hostname string) (*Server, error) {
 }
 
 func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
-	userID := strings.TrimSpace(r.Header.Get("X-ExeDev-UserID"))
-	if userID == "" {
-		userID = "anonymous"
-	}
+	userID := s.GetUserID(r)
 
 	q := dbgen.New(s.DB)
 	pages, err := q.GetPagesByUserID(r.Context(), userID)
@@ -84,27 +90,41 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) HandlePage(w http.ResponseWriter, r *http.Request) {
-	pageID := r.PathValue("id")
-	userID := strings.TrimSpace(r.Header.Get("X-ExeDev-UserID"))
-	if userID == "" {
-		userID = "anonymous"
-	}
+	idOrSlug := r.PathValue("id")
+	userID := s.GetUserID(r)
 
 	q := dbgen.New(s.DB)
-	page, err := q.GetPageByID(r.Context(), pageID)
+	
+	// Try to find by ID first, then by slug
+	page, err := q.GetPageByID(r.Context(), idOrSlug)
 	if err != nil {
-		http.Error(w, "Page not found", http.StatusNotFound)
-		return
+		// Try by slug
+		page, err = q.GetPageBySlug(r.Context(), &idOrSlug)
+		if err != nil {
+			http.Error(w, "Page not found", http.StatusNotFound)
+			return
+		}
 	}
 
-	// Check ownership
-	if page.UserID != userID {
+	// Check ownership or public access
+	isOwner := page.UserID == userID
+	isPublic := page.IsPublic != nil && *page.IsPublic == 1
+	// Allow access via slug if slug_access is enabled and accessed by slug (not UUID)
+	hasSlugAccess := page.SlugAccess != nil && *page.SlugAccess == 1 && page.Slug != nil && *page.Slug == idOrSlug
+	
+	if !isOwner && !isPublic && !hasSlugAccess {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
 
+	// Pass ownership info to template
+	type pageData struct {
+		dbgen.Page
+		IsOwner bool
+	}
+	
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.renderTemplate(w, "dashboard.html", page); err != nil {
+	if err := s.renderTemplate(w, "dashboard.html", pageData{Page: page, IsOwner: isOwner}); err != nil {
 		slog.Warn("render template", "url", r.URL.Path, "error", err)
 	}
 }
@@ -125,16 +145,22 @@ func (s *Server) writeJSON(w http.ResponseWriter, status int, data interface{}) 
 
 func (s *Server) HandleAPIGetWidgets(w http.ResponseWriter, r *http.Request) {
 	pageID := r.PathValue("pageId")
-	userID := strings.TrimSpace(r.Header.Get("X-ExeDev-UserID"))
-	if userID == "" {
-		userID = "anonymous"
-	}
+	userID := s.GetUserID(r)
 
 	q := dbgen.New(s.DB)
 
-	// Verify page ownership
+	// Verify page ownership or public access
 	page, err := q.GetPageByID(r.Context(), pageID)
-	if err != nil || page.UserID != userID {
+	if err != nil {
+		s.writeJSON(w, http.StatusForbidden, APIResponse{Error: "forbidden"})
+		return
+	}
+	
+	isOwner := page.UserID == userID
+	isPublic := page.IsPublic != nil && *page.IsPublic == 1
+	hasSlugAccess := page.SlugAccess != nil && *page.SlugAccess == 1 && page.Slug != nil
+	
+	if !isOwner && !isPublic && !hasSlugAccess {
 		s.writeJSON(w, http.StatusForbidden, APIResponse{Error: "forbidden"})
 		return
 	}
@@ -150,10 +176,7 @@ func (s *Server) HandleAPIGetWidgets(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) HandleAPICreateWidget(w http.ResponseWriter, r *http.Request) {
 	pageID := r.PathValue("pageId")
-	userID := strings.TrimSpace(r.Header.Get("X-ExeDev-UserID"))
-	if userID == "" {
-		userID = "anonymous"
-	}
+	userID := s.GetUserID(r)
 
 	q := dbgen.New(s.DB)
 
@@ -237,10 +260,7 @@ func (s *Server) HandleAPICreateWidget(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) HandleAPIUpdateWidget(w http.ResponseWriter, r *http.Request) {
 	widgetID := r.PathValue("id")
-	userID := strings.TrimSpace(r.Header.Get("X-ExeDev-UserID"))
-	if userID == "" {
-		userID = "anonymous"
-	}
+	userID := s.GetUserID(r)
 
 	q := dbgen.New(s.DB)
 
@@ -331,10 +351,7 @@ func (s *Server) HandleAPIUpdateWidget(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) HandleAPIDeleteWidget(w http.ResponseWriter, r *http.Request) {
 	widgetID := r.PathValue("id")
-	userID := strings.TrimSpace(r.Header.Get("X-ExeDev-UserID"))
-	if userID == "" {
-		userID = "anonymous"
-	}
+	userID := s.GetUserID(r)
 
 	q := dbgen.New(s.DB)
 
@@ -361,13 +378,18 @@ func (s *Server) HandleAPIDeleteWidget(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) HandleAPIGetFeed(w http.ResponseWriter, r *http.Request) {
-	url := r.URL.Query().Get("url")
-	if url == "" {
+	feedURL := r.URL.Query().Get("url")
+	if feedURL == "" {
 		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "url required"})
 		return
 	}
+	proxy := ProxyConfig{
+		URL:      r.URL.Query().Get("proxy"),
+		Username: r.URL.Query().Get("proxy_user"),
+		Password: r.URL.Query().Get("proxy_pass"),
+	}
 
-	feed, err := s.GetFeed(r.Context(), url)
+	feed, err := s.GetFeedWithProxy(r.Context(), feedURL, proxy)
 	if err != nil {
 		s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
 		return
@@ -377,16 +399,25 @@ func (s *Server) HandleAPIGetFeed(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) HandleAPIRefreshFeed(w http.ResponseWriter, r *http.Request) {
-	url := r.URL.Query().Get("url")
-	if url == "" {
+	feedURL := r.URL.Query().Get("url")
+	if feedURL == "" {
 		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "url required"})
 		return
 	}
+	proxy := ProxyConfig{
+		URL:      r.URL.Query().Get("proxy"),
+		Username: r.URL.Query().Get("proxy_user"),
+		Password: r.URL.Query().Get("proxy_pass"),
+	}
 
-	// Force refresh
-	s.fetchAndStoreFeed(r.Context(), url)
+	// Force refresh with optional proxy
+	if proxy.URL != "" {
+		s.fetchAndStoreFeedWithProxy(r.Context(), feedURL, proxy)
+	} else {
+		s.fetchAndStoreFeed(r.Context(), feedURL)
+	}
 
-	feed, err := s.GetFeed(r.Context(), url)
+	feed, err := s.GetFeedWithProxy(r.Context(), feedURL, proxy)
 	if err != nil {
 		s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
 		return
@@ -395,11 +426,58 @@ func (s *Server) HandleAPIRefreshFeed(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, APIResponse{Success: true, Data: feed})
 }
 
-func (s *Server) HandleAPIMarkVisited(w http.ResponseWriter, r *http.Request) {
-	userID := strings.TrimSpace(r.Header.Get("X-ExeDev-UserID"))
-	if userID == "" {
-		userID = "anonymous"
+// HandleAPISubmitFeed receives feed data fetched by the client and stores it
+func (s *Server) HandleAPISubmitFeed(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		URL   string     `json:"url"`
+		Title string     `json:"title"`
+		Items []FeedItem `json:"items"`
 	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "invalid json"})
+		return
+	}
+
+	if input.URL == "" {
+		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "url required"})
+		return
+	}
+
+	// Store the feed data
+	err := s.StoreFeedFromClient(r.Context(), input.URL, input.Title, input.Items)
+	if err != nil {
+		s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
+		return
+	}
+
+	// Return the stored feed
+	feed, err := s.GetFeed(r.Context(), input.URL)
+	if err != nil {
+		s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, APIResponse{Success: true, Data: feed})
+}
+
+func (s *Server) HandleAPIGetFavicon(w http.ResponseWriter, r *http.Request) {
+	url := r.URL.Query().Get("url")
+	if url == "" {
+		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "url required"})
+		return
+	}
+
+	favicon, err := s.GetFavicon(r.Context(), url)
+	if err != nil {
+		s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, APIResponse{Success: true, Data: favicon})
+}
+
+func (s *Server) HandleAPIMarkVisited(w http.ResponseWriter, r *http.Request) {
+	userID := s.GetUserID(r)
 
 	var input struct {
 		URL string `json:"url"`
@@ -424,18 +502,15 @@ func (s *Server) HandleAPIMarkVisited(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) HandleAPIGetVisitedLinks(w http.ResponseWriter, r *http.Request) {
-	userID := strings.TrimSpace(r.Header.Get("X-ExeDev-UserID"))
-	if userID == "" {
-		userID = "anonymous"
-	}
+	userID := s.GetUserID(r)
 
 	q := dbgen.New(s.DB)
 	
-	// Clean up old links first (older than 48 hours)
-	cutoff := time.Now().Add(-48 * time.Hour)
+	// Clean up old links first (older than 30 days)
+	cutoff := time.Now().Add(-30 * 24 * time.Hour)
 	_ = q.CleanupOldVisitedLinks(r.Context(), cutoff)
 
-	// Get visited links from last 48 hours
+	// Get visited links from last 30 days
 	links, err := q.GetVisitedLinks(r.Context(), dbgen.GetVisitedLinksParams{
 		UserID:    userID,
 		VisitedAt: cutoff,
@@ -448,12 +523,33 @@ func (s *Server) HandleAPIGetVisitedLinks(w http.ResponseWriter, r *http.Request
 	s.writeJSON(w, http.StatusOK, APIResponse{Success: true, Data: links})
 }
 
+func (s *Server) HandleAPIUnmarkVisited(w http.ResponseWriter, r *http.Request) {
+	userID := s.GetUserID(r)
+
+	var input struct {
+		URLs []string `json:"urls"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "invalid json"})
+		return
+	}
+
+	q := dbgen.New(s.DB)
+	err := q.UnmarkLinksVisited(r.Context(), dbgen.UnmarkLinksVisitedParams{
+		UserID: userID,
+		Urls:   input.URLs,
+	})
+	if err != nil {
+		s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, APIResponse{Success: true})
+}
+
 func (s *Server) HandleAPIUpdatePage(w http.ResponseWriter, r *http.Request) {
 	pageID := r.PathValue("id")
-	userID := strings.TrimSpace(r.Header.Get("X-ExeDev-UserID"))
-	if userID == "" {
-		userID = "anonymous"
-	}
+	userID := s.GetUserID(r)
 
 	q := dbgen.New(s.DB)
 
@@ -464,10 +560,13 @@ func (s *Server) HandleAPIUpdatePage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var input struct {
-		Name    *string `json:"name"`
-		BgColor *string `json:"bg_color"`
-		BgImage *string `json:"bg_image"`
-		Config  *string `json:"config"`
+		Name       *string `json:"name"`
+		BgColor    *string `json:"bg_color"`
+		BgImage    *string `json:"bg_image"`
+		Config     *string `json:"config"`
+		Slug       *string `json:"slug"`
+		IsPublic   *bool   `json:"is_public"`
+		SlugAccess *bool   `json:"slug_access"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "invalid json"})
@@ -485,6 +584,80 @@ func (s *Server) HandleAPIUpdatePage(w http.ResponseWriter, r *http.Request) {
 	}
 	if input.Config != nil {
 		page.Config = *input.Config
+	}
+	
+	// Handle slug update with uniqueness check
+	if input.Slug != nil {
+		slugVal := *input.Slug
+		if slugVal == "" {
+			// Clear the slug
+			page.Slug = nil
+		} else {
+			// Validate slug format (alphanumeric, hyphens, underscores only)
+			if !isValidSlug(slugVal) {
+				s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "Invalid slug format. Use only letters, numbers, hyphens, and underscores."})
+				return
+			}
+			// Check uniqueness
+			count, err := q.CheckSlugExists(r.Context(), dbgen.CheckSlugExistsParams{
+				Slug: &slugVal,
+				ID:   pageID,
+			})
+			if err != nil {
+				s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
+				return
+			}
+			if count > 0 {
+				s.writeJSON(w, http.StatusConflict, APIResponse{Error: "This URL is already taken. Please choose a different one."})
+				return
+			}
+			page.Slug = &slugVal
+		}
+		
+		// Update slug separately
+		err = q.UpdatePageSlug(r.Context(), dbgen.UpdatePageSlugParams{
+			Slug:      page.Slug,
+			UpdatedAt: time.Now(),
+			ID:        pageID,
+		})
+		if err != nil {
+			s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
+			return
+		}
+	}
+	
+	// Handle is_public update
+	if input.IsPublic != nil {
+		var val int64 = 0
+		if *input.IsPublic {
+			val = 1
+		}
+		err = q.UpdatePagePublic(r.Context(), dbgen.UpdatePagePublicParams{
+			IsPublic:  &val,
+			UpdatedAt: time.Now(),
+			ID:        pageID,
+		})
+		if err != nil {
+			s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
+			return
+		}
+	}
+
+	// Handle slug_access update
+	if input.SlugAccess != nil {
+		var val int64 = 0
+		if *input.SlugAccess {
+			val = 1
+		}
+		err = q.UpdatePageSlugAccess(r.Context(), dbgen.UpdatePageSlugAccessParams{
+			SlugAccess: &val,
+			UpdatedAt:  time.Now(),
+			ID:         pageID,
+		})
+		if err != nil {
+			s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
+			return
+		}
 	}
 
 	err = q.UpdatePage(r.Context(), dbgen.UpdatePageParams{
@@ -504,9 +677,64 @@ func (s *Server) HandleAPIUpdatePage(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, APIResponse{Success: true, Data: page})
 }
 
+func (s *Server) HandleAPICheckSlug(w http.ResponseWriter, r *http.Request) {
+	pageID := r.PathValue("id")
+	userID := s.GetUserID(r)
+	slug := r.URL.Query().Get("slug")
+
+	q := dbgen.New(s.DB)
+
+	// Verify page ownership
+	page, err := q.GetPageByID(r.Context(), pageID)
+	if err != nil || page.UserID != userID {
+		s.writeJSON(w, http.StatusForbidden, APIResponse{Error: "forbidden"})
+		return
+	}
+
+	if slug == "" {
+		s.writeJSON(w, http.StatusOK, APIResponse{Success: true, Data: map[string]bool{"available": true}})
+		return
+	}
+
+	if !isValidSlug(slug) {
+		s.writeJSON(w, http.StatusOK, APIResponse{Success: true, Data: map[string]interface{}{
+			"available": false,
+			"reason":    "Invalid format. Use only letters, numbers, hyphens, and underscores (max 64 chars).",
+		}})
+		return
+	}
+
+	count, err := q.CheckSlugExists(r.Context(), dbgen.CheckSlugExistsParams{
+		Slug: &slug,
+		ID:   pageID,
+	})
+	if err != nil {
+		s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
+		return
+	}
+
+	if count > 0 {
+		s.writeJSON(w, http.StatusOK, APIResponse{Success: true, Data: map[string]interface{}{
+			"available": false,
+			"reason":    "This URL is already taken.",
+		}})
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, APIResponse{Success: true, Data: map[string]bool{"available": true}})
+}
+
 func (s *Server) renderTemplate(w http.ResponseWriter, name string, data any) error {
 	path := filepath.Join(s.TemplatesDir, name)
-	tmpl, err := template.ParseFiles(path)
+	funcMap := template.FuncMap{
+		"derefInt64": func(p *int64) int64 {
+			if p == nil {
+				return 0
+			}
+			return *p
+		},
+	}
+	tmpl, err := template.New(name).Funcs(funcMap).ParseFiles(path)
 	if err != nil {
 		return fmt.Errorf("parse template %q: %w", name, err)
 	}
@@ -531,6 +759,12 @@ func (s *Server) setUpDatabase(dbPath string) error {
 func (s *Server) Serve(addr string) error {
 	mux := http.NewServeMux()
 
+	// Auth routes
+	mux.HandleFunc("GET /auth/login", s.HandleLogin)
+	mux.HandleFunc("GET /auth/callback", s.HandleCallback)
+	mux.HandleFunc("GET /auth/logout", s.HandleLogout)
+	mux.HandleFunc("GET /api/auth/status", s.HandleAuthStatus)
+
 	// Pages
 	mux.HandleFunc("GET /{$}", s.HandleRoot)
 	mux.HandleFunc("GET /page/{id}", s.HandlePage)
@@ -541,9 +775,14 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("PATCH /api/widgets/{id}", s.HandleAPIUpdateWidget)
 	mux.HandleFunc("DELETE /api/widgets/{id}", s.HandleAPIDeleteWidget)
 	mux.HandleFunc("PATCH /api/pages/{id}", s.HandleAPIUpdatePage)
+	mux.HandleFunc("GET /api/pages/{id}/check-slug", s.HandleAPICheckSlug)
 	mux.HandleFunc("GET /api/feed", s.HandleAPIGetFeed)
 	mux.HandleFunc("POST /api/feed/refresh", s.HandleAPIRefreshFeed)
+	mux.HandleFunc("POST /api/feed/submit", s.HandleAPISubmitFeed)
+	mux.HandleFunc("GET /api/favicon", s.HandleAPIGetFavicon)
+	mux.HandleFunc("GET /api/proxy", s.HandleAPIProxy)
 	mux.HandleFunc("POST /api/visited", s.HandleAPIMarkVisited)
+	mux.HandleFunc("DELETE /api/visited", s.HandleAPIUnmarkVisited)
 	mux.HandleFunc("GET /api/visited", s.HandleAPIGetVisitedLinks)
 
 	// Static files

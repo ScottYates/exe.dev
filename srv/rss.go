@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"sync"
+	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/mmcdole/gofeed"
@@ -20,14 +22,17 @@ type FeedItem struct {
 }
 
 type FeedData struct {
-	Title   string     `json:"title"`
-	Items   []FeedItem `json:"items"`
-	Error   string     `json:"error,omitempty"`
-	Fetched time.Time  `json:"fetched"`
+	Title            string     `json:"title"`
+	Items            []FeedItem `json:"items"`
+	Fetched          time.Time  `json:"fetched"`
+	Pending          bool       `json:"pending,omitempty"`            // true if feed is still being fetched
+	ClientFetchURL   string     `json:"client_fetch_url,omitempty"`   // if set, client should fetch this URL and submit results
+	Error            string     `json:"error,omitempty"`              // last error message
 }
 
 func (s *Server) StartFeedRefresher(ctx context.Context) {
-	ticker := time.NewTicker(5 * time.Minute)
+	// Check for stale feeds every minute, but only refresh ones older than 5 minutes
+	ticker := time.NewTicker(1 * time.Minute)
 	go func() {
 		// Initial fetch
 		s.refreshAllFeeds(ctx)
@@ -45,12 +50,22 @@ func (s *Server) StartFeedRefresher(ctx context.Context) {
 
 func (s *Server) refreshAllFeeds(ctx context.Context) {
 	q := dbgen.New(s.DB)
-	// Get feeds older than 4.5 minutes
-	staleTime := time.Now().Add(-4*time.Minute - 30*time.Second)
+	
+	// Get healthy feeds older than 5 minutes
+	staleTime := time.Now().Add(-5 * time.Minute)
 	feeds, err := q.GetStaleFeeds(ctx, &staleTime)
 	if err != nil {
 		slog.Warn("failed to get stale feeds", "error", err)
 		return
+	}
+
+	// Also get feeds with errors, but only if older than 30 minutes (backoff for rate limiting)
+	errorStaleTime := time.Now().Add(-30 * time.Minute)
+	errorFeeds, err := q.GetStaleFeedsWithErrors(ctx, &errorStaleTime)
+	if err != nil {
+		slog.Warn("failed to get stale feeds with errors", "error", err)
+	} else {
+		feeds = append(feeds, errorFeeds...)
 	}
 
 	if len(feeds) == 0 {
@@ -59,45 +74,114 @@ func (s *Server) refreshAllFeeds(ctx context.Context) {
 
 	slog.Info("refreshing feeds", "count", len(feeds))
 
-	// Refresh in parallel with limit
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, 5) // max 5 concurrent
-
-	for _, feed := range feeds {
-		wg.Add(1)
-		go func(url string) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			s.fetchAndStoreFeed(ctx, url)
-		}(feed.Url)
+	// Refresh sequentially to avoid database locking issues
+	// Process up to 5 feeds per cycle to spread load over time
+	count := len(feeds)
+	if count > 5 {
+		count = 5
 	}
-	wg.Wait()
+	for i := 0; i < count; i++ {
+		s.fetchAndStoreFeed(ctx, feeds[i].Url)
+	}
 }
 
-func (s *Server) fetchAndStoreFeed(ctx context.Context, url string) {
+func (s *Server) fetchAndStoreFeed(ctx context.Context, feedURL string) {
+	s.fetchAndStoreFeedWithRetryAndProxy(ctx, feedURL, false, ProxyConfig{})
+}
+
+// ProxyConfig holds proxy configuration including optional authentication.
+type ProxyConfig struct {
+	URL      string
+	Username string
+	Password string
+}
+
+// fetchAndStoreFeedWithProxy fetches a feed using the specified proxy configuration.
+func (s *Server) fetchAndStoreFeedWithProxy(ctx context.Context, feedURL string, proxy ProxyConfig) {
+	s.fetchAndStoreFeedWithRetryAndProxy(ctx, feedURL, false, proxy)
+}
+
+// fetchAndStoreFeedWithRetryAndProxy fetches a feed with retry logic and optional proxy.
+// If aggressive is true, retries on all errors (used for new feeds with no cached content).
+func (s *Server) fetchAndStoreFeedWithRetryAndProxy(ctx context.Context, feedURL string, aggressive bool, proxy ProxyConfig) {
 	parser := gofeed.NewParser()
-	parser.UserAgent = "FeedDeck/1.0 (+https://github.com/feeddeck)"
-	parser.Client = s.httpClient
+	parser.UserAgent = "NewsForNerds/1.0"
+	
+	// Use proxy if provided, otherwise use default client
+	if proxy.URL != "" {
+		proxyParsed, err := url.Parse(proxy.URL)
+		if err == nil {
+			// Add authentication if provided
+			if proxy.Username != "" {
+				proxyParsed.User = url.UserPassword(proxy.Username, proxy.Password)
+			}
+			parser.Client = &http.Client{
+				Timeout: 30 * time.Second,
+				Transport: &http.Transport{
+					Proxy: http.ProxyURL(proxyParsed),
+				},
+			}
+			slog.Debug("using proxy for feed fetch", "url", feedURL, "proxy", proxy.URL, "auth", proxy.Username != "")
+		} else {
+			slog.Warn("invalid proxy URL, using direct connection", "proxy", proxy.URL, "error", err)
+			parser.Client = s.httpClient
+		}
+	} else {
+		parser.Client = s.httpClient
+	}
 
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
+	var feed *gofeed.Feed
+	var err error
 
-	feed, err := parser.ParseURLWithContext(url, ctx)
+	maxAttempts := 3
+	if aggressive {
+		maxAttempts = 5
+	}
+
+	// Retry with backoff
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			// Backoff: 1s, 2s, 3s, 4s
+			time.Sleep(time.Duration(attempt) * time.Second)
+		}
+
+		fetchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		feed, err = parser.ParseURLWithContext(feedURL, fetchCtx)
+		cancel()
+
+		if err == nil {
+			break
+		}
+
+		// In aggressive mode, retry all errors
+		if aggressive {
+			slog.Debug("retrying feed fetch (aggressive)", "url", feedURL, "attempt", attempt+1, "error", err)
+			continue
+		}
+
+		// Otherwise only retry on transient errors
+		errStr := err.Error()
+		isTransient := strings.Contains(errStr, "429") ||
+			strings.Contains(errStr, "timeout") ||
+			strings.Contains(errStr, "temporary") ||
+			strings.Contains(errStr, "503")
+		if !isTransient {
+			break
+		}
+		slog.Debug("retrying feed fetch", "url", feedURL, "attempt", attempt+1, "error", err)
+	}
 
 	now := time.Now()
 	q := dbgen.New(s.DB)
 
 	if err != nil {
-		slog.Warn("failed to fetch feed", "url", url, "error", err)
+		slog.Warn("failed to fetch feed", "url", feedURL, "error", err)
 		errStr := err.Error()
-		_ = q.UpsertFeed(ctx, dbgen.UpsertFeedParams{
-			Url:         url,
-			Title:       "",
-			Content:     "[]",
+		// On error, just update the error field and timestamp - preserve cached content
+		_ = q.UpdateFeedError(ctx, dbgen.UpdateFeedErrorParams{
 			LastFetched: &now,
 			LastError:   &errStr,
-			CreatedAt:   now,
+			Url:         feedURL,
 		})
 		return
 	}
@@ -126,7 +210,7 @@ func (s *Server) fetchAndStoreFeed(ctx context.Context, url string) {
 	content, _ := json.Marshal(items)
 
 	err = q.UpsertFeed(ctx, dbgen.UpsertFeedParams{
-		Url:         url,
+		Url:         feedURL,
 		Title:       feed.Title,
 		Content:     string(content),
 		LastFetched: &now,
@@ -134,38 +218,45 @@ func (s *Server) fetchAndStoreFeed(ctx context.Context, url string) {
 		CreatedAt:   now,
 	})
 	if err != nil {
-		slog.Warn("failed to store feed", "url", url, "error", err)
+		slog.Warn("failed to store feed", "url", feedURL, "error", err)
 	}
 }
 
-func (s *Server) GetFeed(ctx context.Context, url string) (*FeedData, error) {
+// GetFeed returns cached feed data, optionally using a proxy for initial fetch.
+func (s *Server) GetFeed(ctx context.Context, feedURL string) (*FeedData, error) {
+	return s.GetFeedWithProxy(ctx, feedURL, ProxyConfig{})
+}
+
+// GetFeedWithProxy returns cached feed data, using the specified proxy for initial fetch if needed.
+func (s *Server) GetFeedWithProxy(ctx context.Context, feedURL string, proxy ProxyConfig) (*FeedData, error) {
 	q := dbgen.New(s.DB)
 
 	// Ensure feed exists
 	err := q.CreateFeedIfNotExists(ctx, dbgen.CreateFeedIfNotExistsParams{
-		Url:       url,
+		Url:       feedURL,
 		CreatedAt: time.Now(),
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	feed, err := q.GetFeedByURL(ctx, url)
+	feed, err := q.GetFeedByURL(ctx, feedURL)
 	if err != nil {
 		return nil, err
 	}
 
-	// If never fetched, fetch now
+	var items []FeedItem
+	_ = json.Unmarshal([]byte(feed.Content), &items)
+
+	// If never fetched, fetch now with aggressive retry since we have no cache
 	if feed.LastFetched == nil {
-		s.fetchAndStoreFeed(ctx, url)
-		feed, err = q.GetFeedByURL(ctx, url)
+		s.fetchAndStoreFeedWithRetryAndProxy(ctx, feedURL, true, proxy) // aggressive retry for new feeds
+		feed, err = q.GetFeedByURL(ctx, feedURL)
 		if err != nil {
 			return nil, err
 		}
+		_ = json.Unmarshal([]byte(feed.Content), &items)
 	}
-
-	var items []FeedItem
-	_ = json.Unmarshal([]byte(feed.Content), &items)
 
 	data := &FeedData{
 		Title: feed.Title,
@@ -174,10 +265,42 @@ func (s *Server) GetFeed(ctx context.Context, url string) (*FeedData, error) {
 	if feed.LastFetched != nil {
 		data.Fetched = *feed.LastFetched
 	}
-	if feed.LastError != nil {
+
+	// If we have no content and there was an error, ask client to fetch
+	if len(items) == 0 && feed.LastError != nil {
+		data.Pending = true
+		data.ClientFetchURL = feedURL
 		data.Error = *feed.LastError
 	}
+
 	return data, nil
+}
+
+// StoreFeedFromClient stores feed data that was fetched by the client's browser
+func (s *Server) StoreFeedFromClient(ctx context.Context, feedURL, title string, items []FeedItem) error {
+	q := dbgen.New(s.DB)
+
+	// Ensure feed exists
+	err := q.CreateFeedIfNotExists(ctx, dbgen.CreateFeedIfNotExistsParams{
+		Url:       feedURL,
+		CreatedAt: time.Now(),
+	})
+	if err != nil {
+		return err
+	}
+
+	now := time.Now()
+	content, _ := json.Marshal(items)
+
+	err = q.UpsertFeed(ctx, dbgen.UpsertFeedParams{
+		Url:         feedURL,
+		Title:       title,
+		Content:     string(content),
+		LastFetched: &now,
+		LastError:   nil, // Clear any previous error
+		CreatedAt:   now,
+	})
+	return err
 }
 
 func stripHTML(s string) string {

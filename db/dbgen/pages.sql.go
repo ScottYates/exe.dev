@@ -10,6 +10,22 @@ import (
 	"time"
 )
 
+const checkSlugExists = `-- name: CheckSlugExists :one
+SELECT COUNT(*) FROM pages WHERE slug = ? AND id != ?
+`
+
+type CheckSlugExistsParams struct {
+	Slug *string `json:"slug"`
+	ID   string  `json:"id"`
+}
+
+func (q *Queries) CheckSlugExists(ctx context.Context, arg CheckSlugExistsParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, checkSlugExists, arg.Slug, arg.ID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createPage = `-- name: CreatePage :exec
 INSERT INTO pages (id, user_id, name, bg_color, bg_image, config, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -50,7 +66,7 @@ func (q *Queries) DeletePage(ctx context.Context, id string) error {
 }
 
 const getPageByID = `-- name: GetPageByID :one
-SELECT id, user_id, name, bg_color, bg_image, created_at, updated_at, config FROM pages WHERE id = ?
+SELECT id, user_id, name, bg_color, bg_image, created_at, updated_at, config, slug, is_public, slug_access FROM pages WHERE id = ?
 `
 
 func (q *Queries) GetPageByID(ctx context.Context, id string) (Page, error) {
@@ -65,12 +81,38 @@ func (q *Queries) GetPageByID(ctx context.Context, id string) (Page, error) {
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Config,
+		&i.Slug,
+		&i.IsPublic,
+		&i.SlugAccess,
+	)
+	return i, err
+}
+
+const getPageBySlug = `-- name: GetPageBySlug :one
+SELECT id, user_id, name, bg_color, bg_image, created_at, updated_at, config, slug, is_public, slug_access FROM pages WHERE slug = ?
+`
+
+func (q *Queries) GetPageBySlug(ctx context.Context, slug *string) (Page, error) {
+	row := q.db.QueryRowContext(ctx, getPageBySlug, slug)
+	var i Page
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Name,
+		&i.BgColor,
+		&i.BgImage,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Config,
+		&i.Slug,
+		&i.IsPublic,
+		&i.SlugAccess,
 	)
 	return i, err
 }
 
 const getPagesByUserID = `-- name: GetPagesByUserID :many
-SELECT id, user_id, name, bg_color, bg_image, created_at, updated_at, config FROM pages WHERE user_id = ? ORDER BY created_at
+SELECT id, user_id, name, bg_color, bg_image, created_at, updated_at, config, slug, is_public, slug_access FROM pages WHERE user_id = ? ORDER BY created_at
 `
 
 func (q *Queries) GetPagesByUserID(ctx context.Context, userID string) ([]Page, error) {
@@ -91,6 +133,9 @@ func (q *Queries) GetPagesByUserID(ctx context.Context, userID string) ([]Page, 
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.Config,
+			&i.Slug,
+			&i.IsPublic,
+			&i.SlugAccess,
 		); err != nil {
 			return nil, err
 		}
@@ -127,5 +172,50 @@ func (q *Queries) UpdatePage(ctx context.Context, arg UpdatePageParams) error {
 		arg.UpdatedAt,
 		arg.ID,
 	)
+	return err
+}
+
+const updatePagePublic = `-- name: UpdatePagePublic :exec
+UPDATE pages SET is_public = ?, updated_at = ? WHERE id = ?
+`
+
+type UpdatePagePublicParams struct {
+	IsPublic  *int64    `json:"is_public"`
+	UpdatedAt time.Time `json:"updated_at"`
+	ID        string    `json:"id"`
+}
+
+func (q *Queries) UpdatePagePublic(ctx context.Context, arg UpdatePagePublicParams) error {
+	_, err := q.db.ExecContext(ctx, updatePagePublic, arg.IsPublic, arg.UpdatedAt, arg.ID)
+	return err
+}
+
+const updatePageSlug = `-- name: UpdatePageSlug :exec
+UPDATE pages SET slug = ?, updated_at = ? WHERE id = ?
+`
+
+type UpdatePageSlugParams struct {
+	Slug      *string   `json:"slug"`
+	UpdatedAt time.Time `json:"updated_at"`
+	ID        string    `json:"id"`
+}
+
+func (q *Queries) UpdatePageSlug(ctx context.Context, arg UpdatePageSlugParams) error {
+	_, err := q.db.ExecContext(ctx, updatePageSlug, arg.Slug, arg.UpdatedAt, arg.ID)
+	return err
+}
+
+const updatePageSlugAccess = `-- name: UpdatePageSlugAccess :exec
+UPDATE pages SET slug_access = ?, updated_at = ? WHERE id = ?
+`
+
+type UpdatePageSlugAccessParams struct {
+	SlugAccess *int64    `json:"slug_access"`
+	UpdatedAt  time.Time `json:"updated_at"`
+	ID         string    `json:"id"`
+}
+
+func (q *Queries) UpdatePageSlugAccess(ctx context.Context, arg UpdatePageSlugAccessParams) error {
+	_, err := q.db.ExecContext(ctx, updatePageSlugAccess, arg.SlugAccess, arg.UpdatedAt, arg.ID)
 	return err
 }

@@ -1,0 +1,17 @@
+# Database files
+db.sqlite3
+db.sqlite3-shm
+db.sqlite3-wal
+
+# Environment files
+.env
+
+# Binary
+newsfornerds
+
+# Service files (local)
+*.service
+
+# Build scripts (local)
+doBuild.sh
+doRestart.sh

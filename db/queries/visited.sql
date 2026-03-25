@@ -6,3 +6,9 @@ SELECT DISTINCT link_url FROM visited_links WHERE user_id = ? AND visited_at > ?
 
 -- name: CleanupOldVisitedLinks :exec
 DELETE FROM visited_links WHERE visited_at < ?;
+
+-- name: UnmarkLinkVisited :exec
+DELETE FROM visited_links WHERE user_id = ? AND link_url = ?;
+
+-- name: UnmarkLinksVisited :exec
+DELETE FROM visited_links WHERE user_id = ? AND link_url IN (sqlc.slice('urls'));
