@@ -53,7 +53,12 @@ func New(dbPath, hostname string) (*Server, error) {
 }
 
 func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
+	// Use GetOrCreateVisitorID so unauthenticated visitors get a stable
+	// cookie-based identity before we create a default page for them.
 	userID := s.GetUserID(r)
+	if userID == "anonymous" {
+		userID = s.GetOrCreateVisitorID(w, r)
+	}
 
 	q := dbgen.New(s.DB)
 	pages, err := q.GetPagesByUserID(r.Context(), userID)

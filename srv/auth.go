@@ -20,7 +20,9 @@ import (
 
 const (
 	sessionCookieName = "session"
+	visitorCookieName = "visitor_id"
 	sessionDuration   = 30 * 24 * time.Hour // 30 days
+	visitorDuration   = 365 * 24 * time.Hour // 1 year
 )
 
 var (
@@ -97,6 +99,7 @@ func (s *Server) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		Name:     "oauth_state",
 		Value:    state,
 		Path:     "/",
+		Domain:   s.getCookieDomain(r),
 		HttpOnly: true,
 		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
@@ -113,6 +116,7 @@ func (s *Server) HandleLogin(w http.ResponseWriter, r *http.Request) {
 			Name:     "oauth_return",
 			Value:    returnURL,
 			Path:     "/",
+			Domain:   s.getCookieDomain(r),
 			HttpOnly: true,
 			Secure:   true,
 			SameSite: http.SameSiteLaxMode,
@@ -210,6 +214,34 @@ func (s *Server) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	
+	// Migrate pages from visitor cookie identity to the Google OAuth user
+	if visitorCookie, cookieErr := r.Cookie(visitorCookieName); cookieErr == nil && visitorCookie.Value != "" {
+		visitorID := "visitor:" + visitorCookie.Value
+		err = q.UpdatePagesOwnership(ctx, dbgen.UpdatePagesOwnershipParams{
+			UserID:   user.ID,
+			UserID_2: visitorID,
+		})
+		if err != nil {
+			slog.Warn("failed to migrate visitor pages", "error", err)
+		} else {
+			slog.Info("migrated pages from visitor to Google user", "from", visitorID, "to", user.ID)
+		}
+		// Clear the visitor cookie since they now have a real session
+		http.SetCookie(w, &http.Cookie{
+			Name:   visitorCookieName,
+			Value:  "",
+			Path:   "/",
+			Domain: s.getCookieDomain(r),
+			MaxAge: -1,
+		})
+	}
+
+	// Migrate pages from "anonymous" to the Google OAuth user (legacy cleanup)
+	_ = q.UpdatePagesOwnership(ctx, dbgen.UpdatePagesOwnershipParams{
+		UserID:   user.ID,
+		UserID_2: "anonymous",
+	})
+
 	// Link exe.dev user ID if present and not already linked
 	if exedevUserID != "" && exedevUserID != "anonymous" {
 		// Link the exe.dev ID to this Google OAuth user
@@ -368,7 +400,8 @@ func (s *Server) GetUserFromRequest(r *http.Request) (*dbgen.GetSessionRow, erro
 	return &session, nil
 }
 
-// GetUserID returns the user ID from session, exe.dev header, or "anonymous"
+// GetUserID returns the user ID from session, exe.dev header, or visitor cookie.
+// It never returns "anonymous" — every visitor gets a stable unique ID.
 func (s *Server) GetUserID(r *http.Request) string {
 	// First check for Google OAuth session
 	session, err := s.GetUserFromRequest(r)
@@ -385,8 +418,34 @@ func (s *Server) GetUserID(r *http.Request) string {
 		}
 		return exeUserID
 	}
-	
+
+	// Fall back to visitor cookie
+	if cookie, err := r.Cookie(visitorCookieName); err == nil && cookie.Value != "" {
+		return "visitor:" + cookie.Value
+	}
+
 	return "anonymous"
+}
+
+// GetOrCreateVisitorID reads or creates a visitor_id cookie. Returns the visitor ID.
+// Must be called on handlers that create resources (pages, widgets) so the
+// visitor gets a stable identity before login.
+func (s *Server) GetOrCreateVisitorID(w http.ResponseWriter, r *http.Request) string {
+	if cookie, err := r.Cookie(visitorCookieName); err == nil && cookie.Value != "" {
+		return "visitor:" + cookie.Value
+	}
+	vid := uuid.New().String()
+	http.SetCookie(w, &http.Cookie{
+		Name:     visitorCookieName,
+		Value:    vid,
+		Path:     "/",
+		Domain:   s.getCookieDomain(r),
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   int(visitorDuration.Seconds()),
+	})
+	return "visitor:" + vid
 }
 
 // AuthMiddleware checks authentication for protected routes
