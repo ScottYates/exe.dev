@@ -1787,106 +1787,75 @@ class NewsForNerds {
             const confirmMsg = `Import ${data.widgets.length} widget(s)${hasSettings ? ' and page settings' : ''}?\n\nThis will REPLACE all current widgets. This cannot be undone.`;
             if (!confirm(confirmMsg)) return;
 
-            // Import page settings if present
-            if (hasSettings) {
-                const ps = data.page_settings;
-                const config = JSON.stringify({
-                    grid_size: ps.grid_size ?? 0,
-                    show_grid: ps.show_grid ?? false,
-                    header_size: ps.header_size || 'normal',
-                    item_padding: ps.item_padding || 'normal',
-                    text_brightness: ps.text_brightness || 'normal',
-                    toolbar_collapsed: this.toolbarCollapsed,
-                    auto_refresh: ps.auto_refresh ?? 0,
-                    proxy_url: ps.proxy_url || '',
-                    proxy_user: ps.proxy_user || '',
-                    proxy_pass: ps.proxy_pass || ''
-                });
-
-                try {
-                    await fetch(`/api/pages/${this.pageId}`, {
-                        method: 'PATCH',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            bg_color: ps.bg_color || '',
-                            bg_image: ps.bg_image || '',
-                            config: config
-                        })
-                    });
-
-                    // Apply settings locally
-                    this.applyBackground(ps.bg_color || '', ps.bg_image || '');
-                    this.gridSize = ps.grid_size ?? 0;
-                    this.showGrid = ps.show_grid ?? false;
-                    this.headerSize = ps.header_size || 'normal';
-                    this.itemPadding = ps.item_padding || 'normal';
-                    this.textBrightness = ps.text_brightness || 'normal';
-                    this.autoRefresh = ps.auto_refresh ?? 0;
-                    this.proxyUrl = ps.proxy_url || '';
-                    this.proxyUser = ps.proxy_user || '';
-                    this.proxyPass = ps.proxy_pass || '';
-                    this.updateGridDisplay();
-                    this.applyHeaderSize();
-                    this.applyItemPadding();
-                    this.applyTextBrightness();
-                    this.setupAutoRefresh();
-                } catch (e) {
-                    console.error('Failed to import page settings:', e);
+            // Normalize widget configs: ensure they are objects, not strings
+            const widgets = data.widgets.map(w => {
+                let config = w.config;
+                if (typeof config === 'string') {
+                    try { config = JSON.parse(config); } catch (e) { config = {}; }
                 }
+                return { ...w, config: config || {} };
+            });
+
+            // Send everything in a single batch request
+            const payload = {
+                widgets: widgets,
+                page_settings: hasSettings ? data.page_settings : undefined
+            };
+
+            const response = await fetch(`/api/pages/${this.pageId}/import`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            if (!response.ok) {
+                const err = await response.json();
+                throw new Error(err.error || 'Import failed');
             }
 
-            // First, delete all existing widgets
+            const result = await response.json();
+            if (!result.success) {
+                throw new Error(result.error || 'Import failed');
+            }
+
+            // Remove existing widgets from the DOM
             const existingIds = Array.from(this.widgets.keys());
             for (const widgetId of existingIds) {
-                await fetch(`/api/widgets/${widgetId}`, { method: 'DELETE' });
                 const el = document.getElementById(`widget-${widgetId}`);
                 if (el) el.remove();
             }
             this.widgets.clear();
 
-            // Now import the new widgets
-            let imported = 0;
-            for (const widget of data.widgets) {
-                // Parse config if it's a string
-                let config = widget.config;
-                if (typeof config === 'string') {
-                    try {
-                        config = JSON.parse(config);
-                    } catch (e) {
-                        config = {};
-                    }
-                }
-                
-                const response = await fetch(`/api/pages/${this.pageId}/widgets`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        title: widget.title || 'Imported Widget',
-                        widget_type: widget.widget_type || widget.type || 'rss',
-                        pos_x: widget.pos_x ?? widget.x ?? 0,
-                        pos_y: widget.pos_y ?? widget.y ?? 0,
-                        width: widget.width ?? 300,
-                        height: widget.height ?? 400,
-                        bg_color: widget.bg_color || '#16213e',
-                        header_color: widget.header_color || '#0f3460',
-                        text_color: widget.text_color || '#ffffff',
-                        config: JSON.stringify(config)
-                    })
-                });
+            // Render the imported widgets
+            const imported = result.data.widgets || [];
+            for (const widget of imported) {
+                this.widgets.set(widget.id, widget);
+                this.renderWidget(widget);
+            }
 
-                if (response.ok) {
-                    const result = await response.json();
-                    if (result.success && result.data) {
-                        this.widgets.set(result.data.id, result.data);
-                        this.renderWidget(result.data);
-                        imported++;
-                    }
-                }
+            // Apply page settings locally if they were imported
+            if (hasSettings) {
+                const ps = data.page_settings;
+                this.applyBackground(ps.bg_color || '', ps.bg_image || '');
+                this.gridSize = ps.grid_size ?? 0;
+                this.showGrid = ps.show_grid ?? false;
+                this.headerSize = ps.header_size || 'normal';
+                this.itemPadding = ps.item_padding || 'normal';
+                this.textBrightness = ps.text_brightness || 'normal';
+                this.autoRefresh = ps.auto_refresh ?? 0;
+                this.proxyUrl = ps.proxy_url || '';
+                this.proxyUser = ps.proxy_user || '';
+                this.proxyPass = ps.proxy_pass || '';
+                this.updateGridDisplay();
+                this.applyHeaderSize();
+                this.applyItemPadding();
+                this.applyTextBrightness();
+                this.setupAutoRefresh();
             }
 
             this.hideModals();
             const settingsMsg = hasSettings ? ' and page settings' : '';
-            alert(`Successfully imported ${imported} widget(s)${settingsMsg}`);
+            alert(`Successfully imported ${imported.length} widget(s)${settingsMsg}`);
         } catch (err) {
             console.error('Import error:', err);
             alert('Failed to import widgets: ' + err.message);

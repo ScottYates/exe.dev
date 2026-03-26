@@ -61,6 +61,15 @@ func (q *Queries) DeleteWidget(ctx context.Context, id string) error {
 	return err
 }
 
+const deleteWidgetsByPageID = `-- name: DeleteWidgetsByPageID :exec
+DELETE FROM widgets WHERE page_id = ?
+`
+
+func (q *Queries) DeleteWidgetsByPageID(ctx context.Context, pageID string) error {
+	_, err := q.db.ExecContext(ctx, deleteWidgetsByPageID, pageID)
+	return err
+}
+
 const getWidgetByID = `-- name: GetWidgetByID :one
 SELECT id, page_id, title, widget_type, pos_x, pos_y, width, height, bg_color, text_color, header_color, config, created_at, updated_at FROM widgets WHERE id = ?
 `

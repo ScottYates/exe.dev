@@ -382,6 +382,204 @@ func (s *Server) HandleAPIDeleteWidget(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, APIResponse{Success: true})
 }
 
+func (s *Server) HandleAPIImportWidgets(w http.ResponseWriter, r *http.Request) {
+	pageID := r.PathValue("pageId")
+	userID := s.GetUserID(r)
+
+	q := dbgen.New(s.DB)
+
+	// Verify page ownership
+	page, err := q.GetPageByID(r.Context(), pageID)
+	if err != nil || page.UserID != userID {
+		s.writeJSON(w, http.StatusForbidden, APIResponse{Error: "forbidden"})
+		return
+	}
+
+	var input struct {
+		Widgets []struct {
+			Title       string          `json:"title"`
+			WidgetType  string          `json:"widget_type"`
+			Type        string          `json:"type"`
+			PosX        int64           `json:"pos_x"`
+			PosY        int64           `json:"pos_y"`
+			X           int64           `json:"x"`
+			Y           int64           `json:"y"`
+			Width       int64           `json:"width"`
+			Height      int64           `json:"height"`
+			BgColor     string          `json:"bg_color"`
+			TextColor   string          `json:"text_color"`
+			HeaderColor string          `json:"header_color"`
+			Config      json.RawMessage `json:"config"`
+		} `json:"widgets"`
+		PageSettings *json.RawMessage `json:"page_settings"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "invalid json"})
+		return
+	}
+
+	if len(input.Widgets) == 0 {
+		s.writeJSON(w, http.StatusBadRequest, APIResponse{Error: "no widgets to import"})
+		return
+	}
+
+	// Do everything in a single transaction
+	tx, err := s.DB.BeginTx(r.Context(), nil)
+	if err != nil {
+		s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
+		return
+	}
+	defer tx.Rollback()
+
+	qtx := q.WithTx(tx)
+
+	// Delete all existing widgets for this page
+	if err := qtx.DeleteWidgetsByPageID(r.Context(), pageID); err != nil {
+		s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
+		return
+	}
+
+	// Import page settings if present
+	if input.PageSettings != nil {
+		var ps struct {
+			BgColor        string  `json:"bg_color"`
+			BgImage        string  `json:"bg_image"`
+			GridSize       int     `json:"grid_size"`
+			ShowGrid       bool    `json:"show_grid"`
+			HeaderSize     string  `json:"header_size"`
+			ItemPadding    string  `json:"item_padding"`
+			TextBrightness string  `json:"text_brightness"`
+			AutoRefresh    int     `json:"auto_refresh"`
+			ProxyURL       string  `json:"proxy_url"`
+			ProxyUser      string  `json:"proxy_user"`
+			ProxyPass      string  `json:"proxy_pass"`
+		}
+		if err := json.Unmarshal(*input.PageSettings, &ps); err == nil {
+			configMap := map[string]interface{}{
+				"grid_size":       ps.GridSize,
+				"show_grid":       ps.ShowGrid,
+				"header_size":     ps.HeaderSize,
+				"item_padding":    ps.ItemPadding,
+				"text_brightness": ps.TextBrightness,
+				"auto_refresh":    ps.AutoRefresh,
+				"proxy_url":       ps.ProxyURL,
+				"proxy_user":      ps.ProxyUser,
+				"proxy_pass":      ps.ProxyPass,
+			}
+			configJSON, _ := json.Marshal(configMap)
+			bgColor := ps.BgColor
+			bgImage := ps.BgImage
+			_ = qtx.UpdatePage(r.Context(), dbgen.UpdatePageParams{
+				Name:      page.Name,
+				BgColor:   &bgColor,
+				BgImage:   &bgImage,
+				Config:    string(configJSON),
+				UpdatedAt: time.Now(),
+				ID:        pageID,
+			})
+		}
+	}
+
+	// Create all widgets
+	now := time.Now()
+	var created []dbgen.Widget
+	for _, iw := range input.Widgets {
+		widgetID := uuid.New().String()
+
+		wtype := iw.WidgetType
+		if wtype == "" {
+			wtype = iw.Type
+		}
+		if wtype == "" {
+			wtype = "rss"
+		}
+
+		posX := iw.PosX
+		if posX == 0 {
+			posX = iw.X
+		}
+		posY := iw.PosY
+		if posY == 0 {
+			posY = iw.Y
+		}
+
+		title := iw.Title
+		if title == "" {
+			title = "Imported Widget"
+		}
+		width := iw.Width
+		if width == 0 {
+			width = 300
+		}
+		height := iw.Height
+		if height == 0 {
+			height = 400
+		}
+		bgColor := iw.BgColor
+		if bgColor == "" {
+			bgColor = "#16213e"
+		}
+		textColor := iw.TextColor
+		if textColor == "" {
+			textColor = "#ffffff"
+		}
+		headerColor := iw.HeaderColor
+		if headerColor == "" {
+			headerColor = "#0f3460"
+		}
+
+		// Normalize config to a JSON string
+		configStr := "{}"
+		if len(iw.Config) > 0 {
+			// If it's already a JSON object/string, use as-is
+			var obj interface{}
+			if json.Unmarshal(iw.Config, &obj) == nil {
+				// If it unmarshalled to a string, it was a double-encoded JSON string
+				if str, ok := obj.(string); ok {
+					configStr = str
+				} else {
+					configStr = string(iw.Config)
+				}
+			}
+		}
+
+		err := qtx.CreateWidget(r.Context(), dbgen.CreateWidgetParams{
+			ID:          widgetID,
+			PageID:      pageID,
+			Title:       title,
+			WidgetType:  wtype,
+			PosX:        posX,
+			PosY:        posY,
+			Width:       width,
+			Height:      height,
+			BgColor:     &bgColor,
+			TextColor:   &textColor,
+			HeaderColor: &headerColor,
+			Config:      configStr,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		})
+		if err != nil {
+			slog.Error("failed to create widget during import", "error", err, "title", title)
+			s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: fmt.Sprintf("failed to create widget %q: %v", title, err)})
+			return
+		}
+		// Build response widget
+		widget, _ := qtx.GetWidgetByID(r.Context(), widgetID)
+		created = append(created, widget)
+	}
+
+	if err := tx.Commit(); err != nil {
+		s.writeJSON(w, http.StatusInternalServerError, APIResponse{Error: err.Error()})
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, APIResponse{Success: true, Data: map[string]interface{}{
+		"imported": len(created),
+		"widgets":  created,
+	}})
+}
+
 func (s *Server) HandleAPIGetFeed(w http.ResponseWriter, r *http.Request) {
 	feedURL := r.URL.Query().Get("url")
 	if feedURL == "" {
@@ -777,6 +975,7 @@ func (s *Server) Serve(addr string) error {
 	// API
 	mux.HandleFunc("GET /api/pages/{pageId}/widgets", s.HandleAPIGetWidgets)
 	mux.HandleFunc("POST /api/pages/{pageId}/widgets", s.HandleAPICreateWidget)
+	mux.HandleFunc("POST /api/pages/{pageId}/import", s.HandleAPIImportWidgets)
 	mux.HandleFunc("PATCH /api/widgets/{id}", s.HandleAPIUpdateWidget)
 	mux.HandleFunc("DELETE /api/widgets/{id}", s.HandleAPIDeleteWidget)
 	mux.HandleFunc("PATCH /api/pages/{id}", s.HandleAPIUpdatePage)

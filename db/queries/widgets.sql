@@ -13,3 +13,6 @@ UPDATE widgets SET title = ?, widget_type = ?, pos_x = ?, pos_y = ?, width = ?, 
 
 -- name: DeleteWidget :exec
 DELETE FROM widgets WHERE id = ?;
+
+-- name: DeleteWidgetsByPageID :exec
+DELETE FROM widgets WHERE page_id = ?;
