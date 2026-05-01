@@ -29,7 +29,7 @@ A customizable RSS dashboard for news junkies. Create pages with draggable, resi
 ```bash
 git clone https://github.com/ScottYates/news-for-nerds.git newsfornerds
 cd newsfornerds
-go build -o newsfornerds ./cmd/srv
+make build
 ```
 
 ### 2. Configure Environment
