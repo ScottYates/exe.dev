@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
@@ -21,13 +20,6 @@ import (
 const (
 	sessionCookieName = "session"
 	visitorCookieName = "visitor_id"
-	sessionDuration   = 30 * 24 * time.Hour // 30 days
-	visitorDuration   = 365 * 24 * time.Hour // 1 year
-)
-
-var (
-	googleClientID     = os.Getenv("GOOGLE_CLIENT_ID")
-	googleClientSecret = os.Getenv("GOOGLE_CLIENT_SECRET")
 )
 
 type GoogleTokenResponse struct {
@@ -87,7 +79,7 @@ func (s *Server) getCookieDomain(r *http.Request) string {
 }
 
 func (s *Server) HandleLogin(w http.ResponseWriter, r *http.Request) {
-	if googleClientID == "" {
+	if s.Config.GoogleClientID == "" {
 		http.Error(w, "OAuth not configured", http.StatusServiceUnavailable)
 		return
 	}
@@ -127,7 +119,7 @@ func (s *Server) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	redirectURI := s.getRedirectURI(r)
 	authURL := fmt.Sprintf(
 		"https://accounts.google.com/o/oauth2/v2/auth?client_id=%s&redirect_uri=%s&response_type=code&scope=openid%%20email%%20profile&state=%s",
-		url.QueryEscape(googleClientID),
+		url.QueryEscape(s.Config.GoogleClientID),
 		url.QueryEscape(redirectURI),
 		url.QueryEscape(state),
 	)
@@ -281,7 +273,7 @@ func (s *Server) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		ID:        sessionID,
 		UserID:    user.ID,
 		CreatedAt: now,
-		ExpiresAt: now.Add(sessionDuration),
+		ExpiresAt: now.Add(time.Duration(s.Config.SessionDurationDays) * 24 * time.Hour),
 	})
 	if err != nil {
 		slog.Error("failed to create session", "error", err)
@@ -298,7 +290,7 @@ func (s *Server) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
-		MaxAge:   int(sessionDuration.Seconds()),
+		MaxAge:   s.Config.SessionDurationDays * 86400,
 	})
 
 	// Redirect to return URL if set, otherwise home
@@ -337,8 +329,8 @@ func (s *Server) HandleLogout(w http.ResponseWriter, r *http.Request) {
 func (s *Server) exchangeCode(code, redirectURI string) (*GoogleTokenResponse, error) {
 	data := url.Values{}
 	data.Set("code", code)
-	data.Set("client_id", googleClientID)
-	data.Set("client_secret", googleClientSecret)
+	data.Set("client_id", s.Config.GoogleClientID)
+	data.Set("client_secret", s.Config.GoogleClientSecret)
 	data.Set("redirect_uri", redirectURI)
 	data.Set("grant_type", "authorization_code")
 
@@ -451,7 +443,7 @@ func (s *Server) GetOrCreateVisitorID(w http.ResponseWriter, r *http.Request) st
 		HttpOnly: true,
 		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
-		MaxAge:   int(visitorDuration.Seconds()),
+		MaxAge:   s.Config.VisitorDurationDays * 86400,
 	})
 	return "visitor:" + vid
 }
@@ -476,7 +468,7 @@ func (s *Server) HandleAuthStatus(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusOK, map[string]interface{}{
 			"authenticated": true,
 			"auth_type":     "google",
-			"oauth_enabled": googleClientID != "",
+			"oauth_enabled": s.Config.GoogleClientID != "",
 			"user": map[string]interface{}{
 				"id":      session.UserID,
 				"email":   session.Email,
@@ -494,7 +486,7 @@ func (s *Server) HandleAuthStatus(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusOK, map[string]interface{}{
 			"authenticated": true,
 			"auth_type":     "exedev",
-			"oauth_enabled": googleClientID != "",
+			"oauth_enabled": s.Config.GoogleClientID != "",
 			"user": map[string]interface{}{
 				"id":    exeUserID,
 				"email": exeEmail,
@@ -506,6 +498,6 @@ func (s *Server) HandleAuthStatus(w http.ResponseWriter, r *http.Request) {
 
 	s.writeJSON(w, http.StatusOK, map[string]interface{}{
 		"authenticated": false,
-		"oauth_enabled": googleClientID != "",
+		"oauth_enabled": s.Config.GoogleClientID != "",
 	})
 }

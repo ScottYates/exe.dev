@@ -31,8 +31,7 @@ type FeedData struct {
 }
 
 func (s *Server) StartFeedRefresher(ctx context.Context) {
-	// Check for stale feeds every minute, but only refresh ones older than 5 minutes
-	ticker := time.NewTicker(1 * time.Minute)
+	ticker := time.NewTicker(time.Duration(s.Config.FeedRefreshInterval) * time.Minute)
 	go func() {
 		// Initial fetch
 		s.refreshAllFeeds(ctx)
@@ -51,16 +50,15 @@ func (s *Server) StartFeedRefresher(ctx context.Context) {
 func (s *Server) refreshAllFeeds(ctx context.Context) {
 	q := dbgen.New(s.DB)
 	
-	// Get healthy feeds older than 5 minutes
-	staleTime := time.Now().Add(-5 * time.Minute)
+	staleTime := time.Now().Add(-time.Duration(s.Config.FeedStaleMinutes) * time.Minute)
 	feeds, err := q.GetStaleFeeds(ctx, &staleTime)
 	if err != nil {
 		slog.Warn("failed to get stale feeds", "error", err)
 		return
 	}
 
-	// Also get feeds with errors, but only if older than 30 minutes (backoff for rate limiting)
-	errorStaleTime := time.Now().Add(-30 * time.Minute)
+	// Retry errored feeds with backoff
+	errorStaleTime := time.Now().Add(-time.Duration(s.Config.FeedErrorBackoff) * time.Minute)
 	errorFeeds, err := q.GetStaleFeedsWithErrors(ctx, &errorStaleTime)
 	if err != nil {
 		slog.Warn("failed to get stale feeds with errors", "error", err)
@@ -74,11 +72,10 @@ func (s *Server) refreshAllFeeds(ctx context.Context) {
 
 	slog.Info("refreshing feeds", "count", len(feeds))
 
-	// Refresh sequentially to avoid database locking issues
-	// Process up to 5 feeds per cycle to spread load over time
+	// Process up to N feeds per cycle to spread load
 	count := len(feeds)
-	if count > 5 {
-		count = 5
+	if count > s.Config.FeedMaxPerCycle {
+		count = s.Config.FeedMaxPerCycle
 	}
 	for i := 0; i < count; i++ {
 		s.fetchAndStoreFeed(ctx, feeds[i].Url)
@@ -106,17 +103,17 @@ func (s *Server) fetchAndStoreFeedWithProxy(ctx context.Context, feedURL string,
 func (s *Server) fetchAndStoreFeedWithRetryAndProxy(ctx context.Context, feedURL string, aggressive bool, proxy ProxyConfig) {
 	parser := gofeed.NewParser()
 	parser.UserAgent = "NewsForNerds/1.0"
-	
+	fetchTimeout := time.Duration(s.Config.FeedFetchTimeout) * time.Second
+
 	// Use proxy if provided, otherwise use default client
 	if proxy.URL != "" {
 		proxyParsed, err := url.Parse(proxy.URL)
 		if err == nil {
-			// Add authentication if provided
 			if proxy.Username != "" {
 				proxyParsed.User = url.UserPassword(proxy.Username, proxy.Password)
 			}
 			parser.Client = &http.Client{
-				Timeout: 30 * time.Second,
+				Timeout: fetchTimeout,
 				Transport: &http.Transport{
 					Proxy: http.ProxyURL(proxyParsed),
 				},
@@ -145,7 +142,7 @@ func (s *Server) fetchAndStoreFeedWithRetryAndProxy(ctx context.Context, feedURL
 			time.Sleep(time.Duration(attempt) * time.Second)
 		}
 
-		fetchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		fetchCtx, cancel := context.WithTimeout(ctx, fetchTimeout)
 		feed, err = parser.ParseURLWithContext(feedURL, fetchCtx)
 		cancel()
 
@@ -188,7 +185,7 @@ func (s *Server) fetchAndStoreFeedWithRetryAndProxy(ctx context.Context, feedURL
 
 	items := make([]FeedItem, 0, len(feed.Items))
 	for i, item := range feed.Items {
-		if i >= 50 { // limit items
+		if i >= s.Config.FeedMaxItems {
 			break
 		}
 		fi := FeedItem{

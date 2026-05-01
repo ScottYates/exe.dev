@@ -8,11 +8,17 @@ import (
 	"testing"
 )
 
+func testConfig(dbPath string) *Config {
+	cfg := DefaultConfig()
+	cfg.DBPath = dbPath
+	return cfg
+}
+
 func TestServerStartup(t *testing.T) {
 	tempDB := filepath.Join(t.TempDir(), "test.sqlite3")
 	t.Cleanup(func() { os.Remove(tempDB) })
 
-	server, err := New(tempDB, "test-host")
+	server, err := New(testConfig(tempDB), "test-host")
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
@@ -25,7 +31,7 @@ func TestRootRedirects(t *testing.T) {
 	tempDB := filepath.Join(t.TempDir(), "test.sqlite3")
 	t.Cleanup(func() { os.Remove(tempDB) })
 
-	server, err := New(tempDB, "test-host")
+	server, err := New(testConfig(tempDB), "test-host")
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}

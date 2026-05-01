@@ -6,6 +6,9 @@ db.sqlite3-wal
 # Environment files
 .env
 
+# Log files
+logs/*.log
+
 # Binary
 newsfornerds
 

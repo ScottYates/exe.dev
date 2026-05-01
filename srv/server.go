@@ -95,24 +95,26 @@ func (s *Server) assignSlug(ctx context.Context, q *dbgen.Queries, pageID, name,
 
 type Server struct {
 	DB           *sql.DB
+	Config       *Config
 	Hostname     string
 	TemplatesDir string
 	StaticDir    string
 	httpClient   *http.Client
 }
 
-func New(dbPath, hostname string) (*Server, error) {
+func New(cfg *Config, hostname string) (*Server, error) {
 	_, thisFile, _, _ := runtime.Caller(0)
 	baseDir := filepath.Dir(thisFile)
 	srv := &Server{
+		Config:       cfg,
 		Hostname:     hostname,
 		TemplatesDir: filepath.Join(baseDir, "templates"),
 		StaticDir:    filepath.Join(baseDir, "static"),
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: time.Duration(cfg.FeedFetchTimeout) * time.Second,
 		},
 	}
-	if err := srv.setUpDatabase(dbPath); err != nil {
+	if err := srv.setUpDatabase(cfg.DBPath); err != nil {
 		return nil, err
 	}
 	return srv, nil
@@ -135,7 +137,7 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 	// Create default page if none exists
 	if len(pages) == 0 {
 		pageID := uuid.New().String()
-		bgColor := "#1a1a2e"
+		bgColor := s.Config.DefaultBgColor
 		bgImage := ""
 		now := time.Now()
 		err := q.CreatePage(r.Context(), dbgen.CreatePageParams{
@@ -308,13 +310,13 @@ func (s *Server) HandleAPICreateWidget(w http.ResponseWriter, r *http.Request) {
 		input.Height = 400
 	}
 	if input.BgColor == "" {
-		input.BgColor = "#16213e"
+		input.BgColor = s.Config.DefaultWidgetBg
 	}
 	if input.TextColor == "" {
-		input.TextColor = "#ffffff"
+		input.TextColor = s.Config.DefaultWidgetText
 	}
 	if input.HeaderColor == "" {
-		input.HeaderColor = "#0f3460"
+		input.HeaderColor = s.Config.DefaultWidgetHeader
 	}
 	if input.Config == "" {
 		input.Config = "{}"
@@ -602,15 +604,15 @@ func (s *Server) HandleAPIImportWidgets(w http.ResponseWriter, r *http.Request) 
 		}
 		bgColor := iw.BgColor
 		if bgColor == "" {
-			bgColor = "#16213e"
+			bgColor = s.Config.DefaultWidgetBg
 		}
 		textColor := iw.TextColor
 		if textColor == "" {
-			textColor = "#ffffff"
+			textColor = s.Config.DefaultWidgetText
 		}
 		headerColor := iw.HeaderColor
 		if headerColor == "" {
-			headerColor = "#0f3460"
+			headerColor = s.Config.DefaultWidgetHeader
 		}
 
 		// Normalize config to a JSON string
@@ -794,8 +796,8 @@ func (s *Server) HandleAPIGetVisitedLinks(w http.ResponseWriter, r *http.Request
 
 	q := dbgen.New(s.DB)
 	
-	// Clean up old links first (older than 30 days)
-	cutoff := time.Now().Add(-30 * 24 * time.Hour)
+	// Clean up old links first
+	cutoff := time.Now().Add(-time.Duration(s.Config.VisitedLinkMaxDays) * 24 * time.Hour)
 	_ = q.CleanupOldVisitedLinks(r.Context(), cutoff)
 
 	// Get visited links from last 30 days
@@ -1081,6 +1083,14 @@ func (s *Server) Serve(addr string) error {
 	ctx := context.Background()
 	s.StartFeedRefresher(ctx)
 
-	slog.Info("starting server", "addr", addr)
+	slog.Info("starting server",
+		"addr", addr,
+		"db", s.Config.DBPath,
+		"log_file", s.Config.LogFile,
+		"log_level", s.Config.LogLevel,
+		"oauth", s.Config.GoogleClientID != "",
+		"feed_refresh_min", s.Config.FeedRefreshInterval,
+		"feed_stale_min", s.Config.FeedStaleMinutes,
+	)
 	return http.ListenAndServe(addr, mux)
 }
