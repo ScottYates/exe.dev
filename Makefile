@@ -1,10 +1,10 @@
 .PHONY: build clean stop start restart test
 
 build:
-	go build -o srv ./cmd/srv
+	go build -o newsfornerds ./cmd/srv
 
 clean:
-	rm -f srv
+	rm -f newsfornerds
 
 test:
 	go test ./...
