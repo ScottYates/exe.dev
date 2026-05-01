@@ -33,10 +33,14 @@ func Open(path string) (*sql.DB, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("set WAL: %w", err)
 	}
-	if _, err := db.Exec("PRAGMA busy_timeout=1000;"); err != nil {
+	if _, err := db.Exec("PRAGMA busy_timeout=5000;"); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("set busy_timeout: %w", err)
 	}
+	// SQLite handles one writer at a time; limit open connections to avoid
+	// SQLITE_BUSY under concurrent goroutines (feed refresher, HTTP handlers).
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	return db, nil
 }
 
