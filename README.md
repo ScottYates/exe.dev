@@ -115,21 +115,6 @@ go build -o newsfornerds ./cmd/srv
 sudo systemctl restart newsfornerds
 ```
 
-## Deploying on exe.dev
-
-```bash
-git clone https://github.com/ScottYates/news-for-nerds.git newsfornerds
-cd newsfornerds
-go build -o newsfornerds ./cmd/srv
-cp .env.example .env
-# Edit .env with your Google OAuth credentials
-# Set redirect URI to: https://your-vm-name.exe.xyz:8000/auth/callback
-sudo cp newsfornerds.service /etc/systemd/system/
-sudo systemctl daemon-reload && sudo systemctl enable --now newsfornerds
-```
-
-Your app will be available at `https://your-vm-name.exe.xyz:8000/`.
-
 ## Project Structure
 
 ```
