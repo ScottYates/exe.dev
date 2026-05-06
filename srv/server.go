@@ -2,6 +2,7 @@ package srv
 
 import (
 	"context"
+	"crypto/tls"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -100,6 +101,7 @@ type Server struct {
 	TemplatesDir string
 	StaticDir    string
 	httpClient   *http.Client
+	proxyClient  *http.Client // allows insecure TLS for iframe proxy
 }
 
 func New(cfg *Config, hostname string) (*Server, error) {
@@ -112,6 +114,12 @@ func New(cfg *Config, hostname string) (*Server, error) {
 		StaticDir:    filepath.Join(baseDir, "static"),
 		httpClient: &http.Client{
 			Timeout: time.Duration(cfg.FeedFetchTimeout) * time.Second,
+		},
+		proxyClient: &http.Client{
+			Timeout: 30 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			},
 		},
 	}
 	if err := srv.setUpDatabase(cfg.DBPath); err != nil {

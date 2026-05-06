@@ -2,6 +2,7 @@ package srv
 
 import (
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -34,9 +35,10 @@ func (s *Server) HandleAPIProxy(w http.ResponseWriter, r *http.Request) {
 	// Set a reasonable user agent
 	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; NewsForNerds/1.0)")
 
-	resp, err := s.httpClient.Do(req)
+	resp, err := s.proxyClient.Do(req)
 	if err != nil {
-		http.Error(w, "failed to fetch url", http.StatusBadGateway)
+		slog.Warn("proxy fetch failed", "url", targetURL, "error", err)
+		http.Error(w, "failed to fetch url: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
